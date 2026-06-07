@@ -1,0 +1,9 @@
+{
+  "name": "ИИ-Тренажёр по книгам",
+  "short_name": "ИИ-Тренажёр",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0f1117",
+  "theme_color": "#0f1117",
+  "description": "Тренажёр для отработки навыков общения и психологии с помощью локальных ИИ"
+}

@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0f1117" />
+<title>ИИ-Тренажёр по книгам — v1.6</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<meta name="apple-mobile-web-app-title" content="ИИ-Тренажёр" />
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err => console.log('SW ref:', err));
+    });
+  }
+</script>
+<!--
+  ИИ-Тренажёр по книгам — журнал версий:
+  v1.6 — КЛЮЧЕВОЙ ФИКС: renderChat() удалял #empty и падал на старте (тренировка не запускалась
+         ни онлайн, ни офлайн). Заглушка кэшируется. + глобальный перехват ошибок на экран.
+  v1.5 — заметные ошибки: всплывающий toast + подсветка незаполненного поля «Книга и автор»
+         (исправлено «кнопка не реагирует» при пустом обязательном поле на телефоне).
+  v1.4 — офлайн: реальная проверка WebGPU + понятная карточка-ошибка, если файл открыт через
+         файловый менеджер (content://) или file:// (исправлено «кнопка не реагирует»).
+  v1.3 — офлайн-режим: ответ модели теперь стримится в чат (исправлено «ничего не происходит»).
+  v1.2 — добавлен офлайн-режим (WebLLM / на устройстве) со скачиванием моделей.
+  v1.1 — починка подключения на смартфоне (CORS/очистка ключа/таймаут/кнопка «Проверить»).
+  v1.0 — базовая версия с мультипровайдерами, темами, голосом и быстрыми действиями.
+-->
+<script>const APP_VERSION="v1.6";</script>
+<script>
+  // Apply saved theme ASAP to avoid flash
+  try{
+    var _s=JSON.parse(localStorage.getItem("ai_trainer_v2")||"{}");
+    var _t=_s.theme||((window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark");
+    document.documentElement.setAttribute("data-theme",_t);
+  }catch(e){}
+</script>
+<style>
+  :root{
+    --bg:#0f1117;
+    --panel:#171a23;
+    --panel-2:#1f2330;
+    --border:#2a2f3e;
+    --text:#e7e9ee;
+    --muted:#9aa3b2;
+    --accent:#6c8cff;
+    --accent-2:#8b5cf6;
+    --user:#243049;
+    --assistant:#1c2230;
+    --danger:#ff6b6b;
+    --ok:#3ecf8e;
+    --radius:14px;
+    --font:"Segoe UI",Roboto,system-ui,-apple-system,sans-serif;
+    --sbw:380px;
+    --bggrad-1:#1c2030;
+    --bggrad-2:#221a33;
+  }
+  html[data-theme="light"]{
+    --bg:#f3f5fa;
+    --panel:#ffffff;
+    --panel-2:#eef1f7;
+    --border:#d8deea;
+    --text:#1a1d26;
+    --muted:#5d6677;
+    --accent:#4f6bff;
+    --accent-2:#7c4dff;
+    --user:#dde6fb;
+    --assistant:#f1f3f9;
+    --bggrad-1:#dbe3f7;
+    --bggrad-2:#e7ddf7;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;font-family:var(--font);background:
+      radial-gradient(1200px 600px at 15% -10%, var(--bggrad-1) 0%, transparent 60%),
+      radial-gradient(1000px 500px at 110% 10%, var(--bggrad-2) 0%, transparent 55%),
+      var(--bg);
+    color:var(--text);display:flex;flex-direction:column;
+    height:100dvh;overflow:hidden;
+    -webkit-tap-highlight-color:transparent;
+    transition:background-color .25s, color .25s;
+  }
+  header{
+    display:flex;align-items:center;gap:10px;
+    padding:10px max(14px,env(safe-area-inset-right)) 10px max(14px,env(safe-area-inset-left));
+    padding-top:max(10px,env(safe-area-inset-top));
+    border-bottom:1px solid var(--border);background:var(--bg);
+    backdrop-filter:blur(8px);flex-shrink:0;z-index:30;opacity:.97;
+  }
+  .logo{
+    width:34px;height:34px;border-radius:9px;flex-shrink:0;
+    background:linear-gradient(135deg,var(--accent),var(--accent-2));
+    display:flex;align-items:center;justify-content:center;font-size:18px;
+  }
+  .htitle h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.2px;line-height:1.2}
+  .htitle .sub{font-size:11.5px;color:var(--muted);margin-top:1px}
+  .header-spacer{flex:1}
+  .btn{
+    border:1px solid var(--border);background:var(--panel-2);color:var(--text);
+    padding:8px 13px;border-radius:10px;cursor:pointer;font-size:13px;
+    font-family:inherit;transition:.15s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
+  }
+  .btn:hover{border-color:var(--accent);background:#252b3a}
+  .btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-2));border:none;font-weight:600;color:#fff}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.ghost{background:transparent}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.icon{padding:8px 10px}
+  .btn.active{border-color:var(--accent);background:#252b3a;color:var(--accent)}
+
+  main{flex:1;display:flex;min-height:0;position:relative}
+
+  /* Sidebar */
+  .sidebar{
+    width:var(--sbw);flex-shrink:0;border-right:1px solid var(--border);
+    background:var(--panel);overflow-y:auto;padding:18px;
+    -webkit-overflow-scrolling:touch;
+  }
+  .sidebar.hidden{display:none}
+  .scrim{display:none}
+  .field{margin-bottom:16px}
+  .field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px;font-weight:600}
+  .field label .req{color:var(--accent)}
+  textarea,input,select{
+    width:100%;background:var(--panel-2);border:1px solid var(--border);color:var(--text);
+    border-radius:10px;padding:11px 12px;font-family:inherit;font-size:16px;resize:vertical;
+  }
+  @media(min-width:821px){textarea,input,select{font-size:13.5px}}
+  textarea:focus,input:focus,select:focus{outline:none;border-color:var(--accent)}
+  textarea{min-height:72px;line-height:1.5}
+  .hint{font-size:11.5px;color:var(--muted);margin-top:5px;line-height:1.4}
+  .section-title{
+    font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);
+    margin:22px 0 12px;font-weight:700;border-top:1px solid var(--border);padding-top:16px;
+  }
+  .section-title:first-child{border-top:none;margin-top:0;padding-top:0}
+  details.tpl{margin-bottom:16px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2)}
+  details.tpl summary{cursor:pointer;padding:10px 12px;font-size:12.5px;color:var(--muted);user-select:none}
+  details.tpl pre{
+    margin:0;padding:0 12px 12px;font-size:11px;color:var(--muted);white-space:pre-wrap;
+    line-height:1.5;max-height:240px;overflow:auto;
+  }
+  .preset-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .chip{
+    font-size:11.5px;border:1px solid var(--border);background:var(--panel-2);color:var(--muted);
+    padding:6px 10px;border-radius:20px;cursor:pointer;transition:.15s;
+  }
+  .chip:hover{border-color:var(--accent);color:var(--text)}
+
+  /* Chat */
+  .chat-wrap{flex:1;display:flex;flex-direction:column;min-width:0}
+  .chat{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:20px clamp(14px,6vw,90px);display:flex;flex-direction:column;gap:16px}
+  .msg{max-width:760px;width:100%;margin:0 auto;display:flex;gap:10px;animation:fade .25s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .avatar{width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:15px}
+  .msg .body{flex:1;min-width:0}
+  .msg .name{font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .bubble{
+    padding:12px 15px;border-radius:12px;line-height:1.6;font-size:15px;
+    border:1px solid var(--border);white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;
+  }
+  .msg.user .avatar{background:#2b3a5c}
+  .msg.user .bubble{background:var(--user)}
+  .msg.assistant .avatar{background:linear-gradient(135deg,var(--accent),var(--accent-2))}
+  .msg.assistant .bubble{background:var(--assistant)}
+  .bubble code{background:var(--panel-2);border:1px solid var(--border);padding:1px 5px;border-radius:5px;font-size:13px}
+  .bubble strong{color:var(--text);font-weight:700}
+  .bubble h3{margin:10px 0 6px;font-size:15px}
+  .bubble ul,.bubble ol{margin:6px 0;padding-left:22px}
+  .bubble li{margin:3px 0}
+  .speak-btn{
+    background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;padding:0;opacity:.7;
+  }
+  .speak-btn:hover{color:var(--accent);opacity:1}
+
+  .empty{margin:auto;text-align:center;max-width:520px;color:var(--muted);padding:30px 20px}
+  .empty .big{font-size:44px;margin-bottom:14px}
+  .empty h2{color:var(--text);font-size:20px;margin:0 0 10px}
+  .empty p{font-size:14px;line-height:1.6}
+
+  .typing{display:inline-flex;gap:4px;padding:4px 0}
+  .typing span{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:bounce 1.2s infinite}
+  .typing span:nth-child(2){animation-delay:.2s}
+  .typing span:nth-child(3){animation-delay:.4s}
+  @keyframes bounce{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-5px)}}
+
+  /* Quick actions */
+  .quickbar{max-width:784px;margin:0 auto;display:flex;gap:8px;overflow-x:auto;padding:0 0 4px;scrollbar-width:none}
+  .quickbar::-webkit-scrollbar{display:none}
+  .quickbar .chip{flex-shrink:0;background:var(--panel)}
+
+  /* Composer */
+  .composer{
+    border-top:1px solid var(--border);background:var(--bg);opacity:.99;backdrop-filter:blur(8px);
+    padding:12px clamp(14px,6vw,90px);
+    padding-bottom:max(12px,env(safe-area-inset-bottom));flex-shrink:0;
+  }
+  .composer-inner{max-width:784px;margin:8px auto 0;display:flex;gap:8px;align-items:flex-end}
+  .composer textarea{flex:1;min-height:48px;max-height:160px;border-radius:12px}
+  .cbtn{
+    width:48px;height:48px;border-radius:12px;border:1px solid var(--border);cursor:pointer;flex-shrink:0;
+    background:var(--panel-2);color:var(--text);font-size:18px;
+    display:flex;align-items:center;justify-content:center;transition:.15s;
+  }
+  .cbtn:hover{border-color:var(--accent)}
+  .cbtn.send{background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;border:none}
+  .cbtn.send:hover{filter:brightness(1.1)}
+  .cbtn:disabled{opacity:.4;cursor:not-allowed}
+  .cbtn.mic.recording{background:var(--danger);border-color:var(--danger);color:#fff;animation:pulse 1.2s infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,107,107,.5)}50%{box-shadow:0 0 0 8px rgba(255,107,107,0)}}
+  .composer .meta{max-width:784px;margin:8px auto 0;font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between;gap:10px}
+  .composer .meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  .banner{
+    max-width:784px;margin:0 auto 8px;background:#3a1f23;border:1px solid #5c2b30;color:#ffb3b3;
+    padding:10px 14px;border-radius:10px;font-size:13px;
+  }
+  html[data-theme="light"] .banner{background:#fdecec;border-color:#f3c2c2;color:#b3261e}
+  /* Всплывающее уведомление поверх всего — видно на любом экране/слое */
+  .toast{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:200;
+    max-width:90%;background:var(--danger);color:#fff;padding:12px 18px;border-radius:12px;
+    font-size:14px;font-weight:500;box-shadow:0 8px 30px rgba(0,0,0,.35);
+    opacity:0;pointer-events:none;transition:opacity .2s,top .2s;text-align:center}
+  .toast.show{opacity:1;top:18px}
+  /* Подсветка незаполненного поля */
+  .field-error{border-color:var(--danger) !important;box-shadow:0 0 0 2px rgba(255,107,107,.25) !important}
+  html[data-theme="light"] #resetChat{border-color:#f3c2c2 !important;color:#b3261e !important}
+
+  /* Modal */
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+  .modal-bg.open{display:flex}
+  .modal{
+    background:var(--panel);border:1px solid var(--border);border-radius:16px;max-width:560px;width:100%;
+    max-height:90dvh;overflow-y:auto;padding:22px;
+  }
+  .modal h2{margin:0 0 6px;font-size:18px}
+  .modal .modal-sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+  .prov{border:1px solid var(--border);background:var(--panel-2);border-radius:10px;padding:10px;cursor:pointer;font-size:13px;transition:.15s}
+  .prov:hover{border-color:var(--accent)}
+  .prov.active{border-color:var(--accent);background:#252b3a}
+  .prov .pname{font-weight:600}
+  .prov .pdesc{font-size:11px;color:var(--muted);margin-top:2px}
+  .modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap}
+  a{color:var(--accent)}
+  .badge{font-size:11px;padding:3px 9px;border-radius:20px;background:var(--panel-2);border:1px solid var(--border);color:var(--muted);max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  .hide-sm{display:inline-flex}
+  .show-sm{display:none}
+
+  /* ===== Responsive: tablet & mobile ===== */
+  @media(max-width:1024px){:root{--sbw:340px}}
+  @media(max-width:820px){
+    .sidebar{
+      position:absolute;top:0;left:0;z-index:40;height:100%;
+      width:min(360px,86vw);box-shadow:0 0 50px rgba(0,0,0,.6);
+      transform:translateX(0);transition:transform .25s ease;
+    }
+    .sidebar.hidden{display:block;transform:translateX(-105%)}
+    .scrim{display:block;position:absolute;inset:0;background:rgba(0,0,0,.5);z-index:35;opacity:0;pointer-events:none;transition:opacity .25s}
+    .scrim.show{opacity:1;pointer-events:auto}
+    .htitle .sub{display:none}
+    .hide-sm{display:none}
+    .show-sm{display:inline-flex}
+    .badge{display:none}
+    header h1{font-size:15px}
+  }
+  @media(max-width:420px){
+    .bubble{font-size:14.5px}
+    .htitle h1{font-size:14px}
+    .logo{width:30px;height:30px;font-size:16px}
+  }
+</style>
+</head>
+<body>
+<div class="toast" id="toast"></div>
+<header>
+  <button class="btn icon show-sm" id="menuBtn" title="Сценарий" style="display:none">☰</button>
+  <div class="logo">🥋</div>
+  <div class="htitle">
+    <h1>ИИ-Тренажёр по книгам <span id="appVer" style="font-size:11px;font-weight:500;color:var(--muted);opacity:.8">v1.6</span></h1>
+    <div class="sub">От пассивного чтения — к навыку через симуляцию</div>
+  </div>
+  <div class="header-spacer"></div>
+  <span class="badge" id="modelBadge">модель не выбрана</span>
+  <button class="btn ghost hide-sm" id="toggleSidebar" title="Сценарий">⚙️ Сценарий</button>
+  <button class="btn" id="openSettings"><span class="hide-sm">🔌 Подключение</span><span class="show-sm" style="display:none">🔌</span></button>
+  <button class="btn ghost icon" id="themeBtn" title="Сменить тему">🌙</button>
+  <button class="btn ghost icon" id="menuMore" title="Ещё">⋯</button>
+</header>
+
+<main>
+  <div class="scrim" id="scrim"></div>
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="section-title">Сценарий тренировки</div>
+
+    <div class="field">
+      <label>Книга и автор <span class="req">*</span></label>
+      <input id="book" placeholder='Напр.: "Психология влияния" Роберта Чалдини' />
+      <div class="hint">Книга, методика или курс (даже не изданные на русском).</div>
+      <div class="preset-chips" id="bookPresets"></div>
+    </div>
+
+    <div class="field">
+      <label>Ваш контекст и задача <span class="req">*</span></label>
+      <textarea id="context" placeholder="Опишите вашу реальную ситуацию: переговоры о бюджете, синдром самозванца, сложный разговор с ребёнком и т.п."></textarea>
+    </div>
+
+    <div class="field">
+      <label>Язык общения тренажёра</label>
+      <select id="lang">
+        <option value="ru" data-name="русском" data-stt="ru-RU">Русский</option>
+        <option value="en" data-name="английском" data-stt="en-US">English</option>
+        <option value="uk" data-name="украинском" data-stt="uk-UA">Українська</option>
+        <option value="kk" data-name="казахском" data-stt="kk-KZ">Қазақша</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="provMode" style="width:auto" checked />
+        «Режим без предохранителей» (провокативные методики)
+      </label>
+      <div class="hint">Блок «Этика и провокация» для жёстких методологий в рамках симуляции.</div>
+    </div>
+
+    <details class="tpl">
+      <summary>📄 Системный промпт для модели</summary>
+      <pre id="promptPreview"></pre>
+    </details>
+
+    <button class="btn primary" id="startBtn" style="width:100%;justify-content:center">▶ Запустить тренировку</button>
+
+    <div class="section-title">Голос и озвучка</div>
+    <div class="field">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="autoSpeak" style="width:auto" />
+        Автоозвучка реплик оппонента (TTS)
+      </label>
+      <div class="hint">Полезно для тренировки разговоров на слух. Голос берётся из системы браузера.</div>
+    </div>
+    <div class="field">
+      <label>Голос синтеза</label>
+      <select id="voiceSel"><option>Загрузка…</option></select>
+    </div>
+    <div class="hint" id="speechSupport"></div>
+  </aside>
+
+  <!-- Chat -->
+  <section class="chat-wrap">
+    <div class="chat" id="chat">
+      <div class="empty" id="empty">
+        <div class="big">🥋📚</div>
+        <h2>Превратите книгу в навык</h2>
+        <p>Тренажёр воплощает <b>автора книги</b>: не пересказывает теорию, а гоняет вас через ролевую симуляцию — оппонент → ваша реплика → разбор от эксперта → усложнение.</p>
+        <p style="margin-top:14px">1. <b>🔌 Подключение</b> — введите ключ и нажмите <b>Проверить</b>.<br/>2. Заполните <b>Сценарий</b>.<br/>3. <b>▶ Запустить тренировку</b>.</p>
+        <p style="margin-top:14px;font-size:13px">🎤 Можно отвечать голосом, 🔊 слушать оппонента, 💾 сохранять диалог.</p>
+        <p style="margin-top:10px;font-size:12px">📱 На смартфоне выбирайте <b>OpenRouter / Groq / Gemini</b> (работают из браузера). 📵 Есть <b>офлайн-режим</b>: скачайте модель один раз — дальше всё работает <b>без интернета и ключа</b> (нужен Chrome с WebGPU).</p>
+      </div>
+    </div>
+    <div class="composer">
+      <div id="bannerSlot"></div>
+      <div class="quickbar" id="quickbar" style="display:none"></div>
+      <div class="composer-inner">
+        <button class="cbtn mic" id="micBtn" title="Голосовой ввод" disabled>🎤</button>
+        <textarea id="input" placeholder="Ваша реплика… (Enter — отправить)" disabled></textarea>
+        <button class="cbtn send" id="sendBtn" disabled>➤</button>
+      </div>
+      <div class="meta">
+        <span id="statusLine">Сначала запустите тренировку</span>
+        <span id="provLine"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Settings modal -->
+<div class="modal-bg" id="settingsModal">
+  <div class="modal">
+    <h2>Подключение к публичной LLM</h2>
+    <div class="modal-sub">Ключ хранится только в вашем браузере (localStorage) и отправляется напрямую провайдеру.</div>
+    <div class="field">
+      <label>Провайдер</label>
+      <div class="provider-grid" id="provGrid"></div>
+    </div>
+    <div class="field">
+      <label>API-ключ <span class="req">*</span></label>
+      <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off"
+             autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" />
+      <div class="hint" id="keyHint"></div>
+    </div>
+    <div class="field">
+      <label>Модель</label>
+      <input id="model" placeholder="название модели" list="modelList"
+             autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off" />
+      <datalist id="modelList"></datalist>
+      <div class="hint">Выберите из подсказок или впишите свою.</div>
+    </div>
+    <div class="field" id="baseUrlField" style="display:none">
+      <label>Base URL (совместимые/локальные эндпоинты)</label>
+      <input id="baseUrl" placeholder="https://..." inputmode="url"
+             autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off" />
+      <div class="hint" id="baseUrlHint"></div>
+    </div>
+
+    <!-- Офлайн-режим (WebLLM, на устройстве) -->
+    <div class="field" id="offlineField" style="display:none">
+      <label>Офлайн-модель (скачивается один раз, работает без интернета)</label>
+      <select id="webllmModel"></select>
+      <div class="hint" id="webllmHint">После выбора нажмите «Скачать / загрузить модель». Файлы кэшируются в браузере — при следующих запусках интернет не нужен.</div>
+      <div id="webllmProgWrap" style="display:none;margin-top:10px">
+        <div style="height:8px;background:var(--panel-2);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+          <div id="webllmBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent-2));transition:width .2s"></div>
+        </div>
+        <div class="hint" id="webllmProgText" style="margin-top:6px"></div>
+      </div>
+      <button class="btn primary" id="webllmLoad" style="margin-top:10px;width:100%;justify-content:center">⬇ Скачать / загрузить модель</button>
+      <div class="hint" id="webllmDirect" style="margin-top:10px"></div>
+      <div class="hint" id="webllmStatus" style="margin-top:8px"></div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="closeSettings">Отмена</button>
+      <button class="btn" id="testConn">Проверить</button>
+      <button class="btn primary" id="saveSettings">Сохранить</button>
+    </div>
+    <div class="hint" id="testResult" style="margin-top:10px"></div>
+  </div>
+</div>
+
+<!-- More menu modal -->
+<div class="modal-bg" id="moreModal">
+  <div class="modal" style="max-width:420px">
+    <h2>Действия</h2>
+    <div class="modal-sub">Управление сессией тренировки.</div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn" id="exportTxt">💾 Скачать диалог (.txt)</button>
+      <button class="btn" id="exportMd">📝 Скачать диалог (.md)</button>
+      <button class="btn" id="copyDialog">📋 Копировать диалог</button>
+      <button class="btn" id="stopSpeak">🔇 Остановить озвучку</button>
+      <button class="btn" id="resetChat" style="border-color:#5c2b30;color:#ffb3b3">🗑 Очистить диалог</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="closeMore">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============ Providers ============ */
+const PROVIDERS = {
+  openai:{name:"OpenAI",desc:"GPT-4o / 4.1",base:"https://api.openai.com/v1/chat/completions",
+    models:["gpt-4o","gpt-4o-mini","gpt-4.1","gpt-4.1-mini","o4-mini"],keyHint:'platform.openai.com → API keys.',style:"openai"},
+  openrouter:{name:"OpenRouter",desc:"Сотни моделей, 1 ключ",base:"https://openrouter.ai/api/v1/chat/completions",
+    models:["openai/gpt-4o","anthropic/claude-3.5-sonnet","google/gemini-2.0-flash-001","meta-llama/llama-3.3-70b-instruct","deepseek/deepseek-chat"],
+    keyHint:'Бесплатный ключ: openrouter.ai/keys.',style:"openai"},
+  groq:{name:"Groq",desc:"Очень быстро, free tier",base:"https://api.groq.com/openai/v1/chat/completions",
+    models:["llama-3.3-70b-versatile","llama-3.1-8b-instant","qwen-2.5-32b","gemma2-9b-it"],keyHint:'Бесплатно: console.groq.com/keys.',style:"openai"},
+  deepseek:{name:"DeepSeek",desc:"Дёшево и сильно",base:"https://api.deepseek.com/chat/completions",
+    models:["deepseek-chat","deepseek-reasoner"],keyHint:'platform.deepseek.com.',style:"openai"},
+  anthropic:{name:"Anthropic",desc:"Claude (CORS!)",base:"https://api.anthropic.com/v1/messages",
+    models:["claude-3-5-sonnet-latest","claude-3-5-haiku-latest"],keyHint:'Браузер может блокировать (CORS). Лучше через OpenRouter.',style:"anthropic"},
+  gemini:{name:"Google Gemini",desc:"Есть free tier",base:"https://generativelanguage.googleapis.com/v1beta/models",
+    models:["gemini-2.0-flash","gemini-2.5-flash","gemini-2.5-pro","gemini-1.5-flash"],keyHint:'Бесплатно: aistudio.google.com/apikey.',style:"gemini"},
+  custom:{name:"Custom / Local",desc:"OpenAI-совместимый",base:"",models:["local-model"],
+    keyHint:'Ollama / LM Studio / vLLM. Укажите Base URL.',style:"openai",custom:true},
+  webllm:{name:"📵 Офлайн (на устройстве)",desc:"Без ключа и интернета (WebGPU)",base:"",models:[],
+    keyHint:'Модель скачивается один раз и работает офлайн прямо в браузере телефона. Нужен Chrome с WebGPU. Ключ не требуется.',style:"webllm",offline:true}
+};
+
+// CDN движка WebLLM (грузится только когда выбран офлайн-режим)
+const WEBLLM_CDN="https://esm.run/@mlc-ai/web-llm";
+// Рекомендации под флагман с 8–16 ГБ ОЗУ; остальные модели тоже доступны в списке
+const WEBLLM_RECOMMENDED={
+  "Qwen2.5-7B-Instruct-q4f16_1-MLC":"⭐ Лучший русский/казахский, 7B",
+  "Llama-3.1-8B-Instruct-q4f16_1-MLC":"⭐ Сильная 8B (англ. сильнее рус.)",
+  "Hermes-3-Llama-3.1-8B-q4f16_1-MLC":"⭐ Отличная ролевая игра, 8B",
+  "Qwen2.5-3B-Instruct-q4f16_1-MLC":"Быстрая и лёгкая, 3B",
+  "gemma-2-9b-it-q4f16_1-MLC":"Качественная 9B"
+};
+
+const BOOK_PRESETS=[
+  '"Психология влияния" Роберта Чалдини',
+  '"Никогда не ешьте в одиночку" Кейта Феррацци',
+  'Книга по боевому НЛП',
+  'Курс позитивной психологии Гарварда (Тал Бен-Шахар)',
+  'Провокативная терапия Фрэнка Фарелли',
+  '"Договориться можно обо всём" Гэвина Кеннеди',
+  '"Сначала скажите нет" Джима Кэмпа'
+];
+
+const QUICK_ACTIONS=[
+  {label:"🔥 Усложни оппонента",msg:"Сделай оппонента заметно более несговорчивым и жёстким, повысь ставки."},
+  {label:"💡 Подскажи приём",msg:"Подскажи, какую технику из книги мне сейчас лучше применить, и приведи пример формулировки."},
+  {label:"↩️ Дай переиграть",msg:"Дай мне переиграть последнюю реплику — верни предыдущую ситуацию оппонента."},
+  {label:"📊 Оцени прогресс",msg:"Сделай краткую промежуточную оценку моего прогресса по методологии книги: что уже хорошо, над чем работать."},
+  {label:"🏁 Завершить сессию",msg:"Заверши тренировочную сессию: дай итоговый разбор, мои сильные стороны, 3 зоны роста и домашнее задание."}
+];
+
+/* ============ State ============ */
+const LS="ai_trainer_v2";
+let settings=JSON.parse(localStorage.getItem(LS)||"{}");
+settings.provider=settings.provider||"openrouter";
+let messages=[];
+let voices=[];
+
+const $=id=>document.getElementById(id);
+const el=(t,c)=>{const e=document.createElement(t);if(c)e.className=c;return e;};
+
+// Глобальный перехват ошибок — чтобы «тихих» сбоев больше не было.
+function _globalErr(msg){
+  try{
+    const t=document.getElementById("toast");
+    if(t){t.textContent="⚠️ Сбой: "+msg;t.classList.add("show");
+      clearTimeout(window._gErrTimer);window._gErrTimer=setTimeout(()=>t.classList.remove("show"),6000);}
+  }catch(_){}
+}
+window.addEventListener("error",e=>{_globalErr((e.message||"ошибка")+(e.filename?" @"+(e.lineno||"?"):""));});
+window.addEventListener("unhandledrejection",e=>{
+  const r=e&&e.reason;_globalErr("promise: "+(r&&r.message||r||"неизвестно"));
+});
+
+/* ============ Prompt ============ */
+function buildSystemPrompt(){
+  const book=$("book").value.trim()||"[книга и автор]";
+  const ctx=$("context").value.trim()||"[контекст пользователя]";
+  const langName=$("lang").selectedOptions[0].dataset.name;
+  const prov=$("provMode").checked;
+  let p=
+`Твоя роль: Ты — продвинутый ИИ-тренажёр и виртуальное воплощение автора книги ${book}. Твоя главная миссия — не пересказывать текст книги, а помочь пользователю отработать практические навыки, заложенные в твоей методологии, и применить их к его реальным жизненным контекстам. Книги дают только знания, а ты должен передать навык через тренировку. Общайся на ${langName} языке.
+
+Текущий контекст и задача пользователя: ${ctx}
+
+Твои задачи и пошаговый алгоритм действий:
+1. Глубокий анализ контекста: Поприветствуй пользователя от лица автора. Оцени его задачу через призму ключевых концепций твоей книги. Если не хватает деталей, задай 1–2 уточняющих вопроса. Не переходи дальше, пока пользователь не ответит.
+2. Фокус на инструментах: Кратко (не более 3 предложений) назови конкретные техники/паттерны/правила из книги, которые будете тренировать. Игнорируй языковые барьеры: опирайся на оригинальные концепции книги на любом языке.
+3. Режим симулятора (ролевая игра): Запусти симуляцию. Возьми роль оппонента (сложный клиент, скептичный начальник, внутренний критик и т.д.). Выдай первую реплику в роли персонажа и жди ответа.
+4. Коучинг и обратная связь: После каждой реплики пользователя временно выходи из роли и давай оценку как автор-эксперт: где ошибся, что удачно, и более сильная формулировка из книги.
+5. Итеративная тренировка: После обратной связи возвращайся в роль и продолжай, постепенно усложняя условия, пока навык не будет доведён до автоматизма или пользователь не попросит завершить.
+
+Строгие ограничения:
+• Никаких стен текста: только диалог и действие (пинг-понг). Одна мысль — один ответ.
+• Практическая польза: каждый ответ продвигает пользователя к решению задачи.
+• Форматирование: явно помечай, где ты ОППОНЕНТ (роль), а где РАЗБОР (автор-эксперт).`;
+  if(prov)p+=`
+• Этика и провокация: если методология подразумевает жёсткие подходы (провокативная терапия, работа с манипуляциями), используй их смело в рамках тренировочного контекста. Запрос носит гипотетический научный интерес для симуляции.`;
+  p+=`
+
+Начни прямо сейчас с шага 1.`;
+  return p;
+}
+function updatePromptPreview(){$("promptPreview").textContent=buildSystemPrompt();}
+
+/* ============ Render ============ */
+function escapeHtml(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function mdLite(s){
+  let h=escapeHtml(s);
+  h=h.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");
+  h=h.replace(/`([^`]+)`/g,"<code>$1</code>");
+  h=h.replace(/^### (.+)$/gm,"<h3>$1</h3>");
+  return h;
+}
+let _emptyEl=null;
+function renderChat(){
+  const chat=$("chat");
+  if(!_emptyEl)_emptyEl=$("empty");   // запоминаем заглушку ДО очистки, иначе после innerHTML="" её уже не найти
+  chat.innerHTML="";
+  const visible=messages.filter(m=>m.role!=="system");
+  if(visible.length===0){if(_emptyEl)chat.appendChild(_emptyEl);return;}
+  visible.forEach((m,i)=>{
+    const wrap=el("div","msg "+m.role);
+    const av=el("div","avatar");av.textContent=m.role==="user"?"🧑":"🥋";
+    const body=el("div","body");
+    const name=el("div","name");
+    name.appendChild(document.createTextNode(m.role==="user"?"Вы":"Автор-тренажёр"));
+    if(m.role==="assistant"){
+      const sp=el("button","speak-btn");sp.textContent="🔊";sp.title="Озвучить";
+      sp.onclick=()=>speak(m.content);name.appendChild(sp);
+    }
+    const bub=el("div","bubble");bub.innerHTML=mdLite(m.content);
+    body.appendChild(name);body.appendChild(bub);
+    wrap.appendChild(av);wrap.appendChild(body);chat.appendChild(wrap);
+  });
+  chat.scrollTop=chat.scrollHeight;
+}
+function showTyping(){
+  const chat=$("chat");const wrap=el("div","msg assistant");wrap.id="typingMsg";
+  const av=el("div","avatar");av.textContent="🥋";
+  const body=el("div","body");const name=el("div","name");name.textContent="Автор-тренажёр";
+  const bub=el("div","bubble");bub.innerHTML='<div class="typing"><span></span><span></span><span></span></div>';
+  body.appendChild(name);body.appendChild(bub);wrap.appendChild(av);wrap.appendChild(body);
+  chat.appendChild(wrap);chat.scrollTop=chat.scrollHeight;
+}
+function removeTyping(){const t=$("typingMsg");if(t)t.remove();}
+function banner(m){$("bannerSlot").innerHTML=m?`<div class="banner">⚠️ ${escapeHtml(m)}</div>`:"";}
+// Всплывающее уведомление поверх всего (видно даже когда открыт сайдбар на телефоне)
+let _toastTimer=null;
+function toast(m){
+  const t=$("toast");if(!t)return;
+  t.textContent="⚠️ "+m;t.classList.add("show");
+  clearTimeout(_toastTimer);_toastTimer=setTimeout(()=>t.classList.remove("show"),4000);
+}
+// Подсветить поле и прокрутить к нему
+function flagField(id){
+  const f=$(id);if(!f)return;
+  f.classList.add("field-error");
+  setTimeout(()=>f.classList.remove("field-error"),3000);
+  try{ f.scrollIntoView({behavior:"smooth",block:"center"}); f.focus({preventScroll:true}); }catch(e){}
+}
+// Большая, заметная карточка-ошибка прямо в области чата (с HTML-инструкцией).
+function showErrorCard(html){
+  const chat=$("chat");chat.innerHTML="";
+  const card=el("div");
+  card.style.cssText="margin:16px auto;max-width:620px;background:var(--panel-2);border:1px solid var(--danger);"+
+    "border-radius:14px;padding:18px 18px;color:var(--text);line-height:1.55;font-size:14px";
+  card.innerHTML=`<div style="font-size:30px;margin-bottom:8px">⚠️</div>`+html;
+  chat.appendChild(card);chat.scrollTop=0;
+}
+
+/* ============ TTS ============ */
+function loadVoices(){
+  if(!("speechSynthesis"in window)){$("speechSupport").textContent="🔇 Синтез речи не поддерживается этим браузером.";return;}
+  voices=speechSynthesis.getVoices();
+  const sel=$("voiceSel");sel.innerHTML="";
+  if(voices.length===0){sel.innerHTML="<option>Голоса недоступны</option>";return;}
+  const cur=$("lang").value;
+  voices.forEach((v,i)=>{
+    const o=el("option");o.value=i;o.textContent=`${v.name} (${v.lang})`;
+    sel.appendChild(o);
+  });
+  // preselect by language
+  const match=voices.findIndex(v=>v.lang.toLowerCase().startsWith(cur));
+  if(settings.voice!=null&&voices[settings.voice])sel.value=settings.voice;
+  else if(match>=0)sel.value=match;
+}
+function speak(text){
+  if(!("speechSynthesis"in window))return;
+  speechSynthesis.cancel();
+  // strip the "РАЗБОР"/markdown noise lightly
+  const clean=text.replace(/\*\*/g,"").replace(/`/g,"");
+  const u=new SpeechSynthesisUtterance(clean);
+  const idx=$("voiceSel").value;
+  if(voices[idx])u.voice=voices[idx];
+  u.rate=1;u.pitch=1;
+  speechSynthesis.speak(u);
+}
+function stopSpeak(){if("speechSynthesis"in window)speechSynthesis.cancel();}
+
+/* ============ STT (voice input) ============ */
+let recognition=null,recording=false;
+function initSTT(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){
+    $("micBtn").title="Голосовой ввод не поддерживается";
+    return false;
+  }
+  recognition=new SR();
+  recognition.continuous=true;
+  recognition.interimResults=true;
+  recognition.onresult=e=>{
+    let fin="",interim="";
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const t=e.results[i][0].transcript;
+      if(e.results[i].isFinal)fin+=t;else interim+=t;
+    }
+    if(fin){const inp=$("input");inp.value=(inp.value?inp.value+" ":"")+fin.trim();autoGrow(inp);}
+  };
+  recognition.onerror=e=>{banner("Микрофон: "+e.error);stopRec();};
+  recognition.onend=()=>{if(recording){try{recognition.start();}catch(_){}}};
+  return true;
+}
+function toggleRec(){
+  if(!recognition){banner("Голосовой ввод недоступен в этом браузере (нужен Chrome/Edge/Safari).");return;}
+  recording?stopRec():startRec();
+}
+function startRec(){
+  try{
+    recognition.lang=$("lang").selectedOptions[0].dataset.stt;
+    recognition.start();recording=true;
+    $("micBtn").classList.add("recording");setStatus("🎤 Слушаю…");
+  }catch(e){banner("Не удалось запустить микрофон: "+e.message);}
+}
+function stopRec(){
+  recording=false;try{recognition.stop();}catch(_){}
+  $("micBtn").classList.remove("recording");
+  if(messages.length)setStatus("Ваш ход — отвечайте оппоненту");
+}
+
+/* ============ API ============ */
+// Убираем невидимые символы, которые мобильная клавиатура подставляет в ключ
+// (пробелы, переносы, неразрывный пробел, zero-width) — частая причина «ключ есть, но не работает».
+function cleanToken(s){
+  return (s||"")
+    .replace(/[\u200B-\u200D\uFEFF]/g,"")
+    .replace(/\u00A0/g," ")
+    .replace(/\s+/g,"")
+    .trim();
+}
+function normBaseUrl(u){
+  u=(u||"").trim().replace(/\s+/g,"");
+  if(!u)return u;
+  if(!/^https?:\/\//i.test(u))u="https://"+u;
+  u=u.replace(/\/+$/,"");
+  if(/\/(v\d|chat|completions|messages|api)\b/i.test(u)===false)u=u+"/v1/chat/completions";
+  else if(/\/v\d$/i.test(u))u=u+"/chat/completions";
+  return u;
+}
+// fetch с таймаутом и понятными ошибками (важно для мобильных сетей)
+async function fetchJSON(url,opts,timeoutMs=60000){
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),timeoutMs);
+  let r;
+  try{ r=await fetch(url,{...opts,signal:ctrl.signal}); }
+  catch(e){
+    clearTimeout(t);
+    if(e.name==="AbortError")throw new Error("Превышено время ожидания сети (таймаут). Проверьте мобильный интернет/VPN.");
+    throw new Error("Не удалось подключиться к провайдеру (сеть или CORS-блокировка). На мобильном браузере: 1) проверьте интернет; 2) этот провайдер может блокировать прямые запросы из браузера — выберите OpenRouter/Groq/Gemini, либо используйте офлайн-режим.");
+  }
+  clearTimeout(t);
+  if(!r.ok){
+    const txt=(await r.text().catch(()=>"")).slice(0,400);
+    if(r.status===401||r.status===403)throw new Error("Ключ отклонён ("+r.status+"). Проверьте, что ключ скопирован полностью и подходит провайдеру. "+txt);
+    if(r.status===404)throw new Error("Модель или эндпоинт не найдены ("+r.status+"). Проверьте название модели/Base URL. "+txt);
+    if(r.status===429)throw new Error("Лимит запросов исчерпан (429). Подождите или смените модель/провайдера. "+txt);
+    throw new Error("HTTP "+r.status+": "+txt);
+  }
+  return r.json();
+}
+async function callLLM(msgs){
+  const p=PROVIDERS[settings.provider];
+  if(p.style==="webllm")return callWebLLM(msgs);
+  const key=cleanToken(settings.apiKey);
+  const model=(settings.model||p.models[0]).trim();
+  const base=settings.provider==="custom"?normBaseUrl(settings.baseUrl):p.base;
+  if(settings.provider==="custom"&&!base)throw new Error("Для Custom/Local укажите Base URL (например, http://localhost:11434 для Ollama).");
+  if(p.style==="gemini"){
+    const url=`${p.base}/${model}:generateContent?key=${encodeURIComponent(key)}`;
+    const sys=msgs.find(m=>m.role==="system");
+    const contents=msgs.filter(m=>m.role!=="system").map(m=>({role:m.role==="assistant"?"model":"user",parts:[{text:m.content}]}));
+    const body={contents};if(sys)body.systemInstruction={parts:[{text:sys.content}]};
+    const d=await fetchJSON(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    return d.candidates?.[0]?.content?.parts?.map(x=>x.text).join("")||"(пусто)";
+  }
+  if(p.style==="anthropic"){
+    const sys=msgs.find(m=>m.role==="system");
+    const body={model,max_tokens:1024,system:sys?sys.content:undefined,messages:msgs.filter(m=>m.role!=="system").map(m=>({role:m.role,content:m.content}))};
+    const d=await fetchJSON(base,{method:"POST",headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify(body)});
+    return d.content?.map(c=>c.text).join("")||"(пусто)";
+  }
+  const headers={"Content-Type":"application/json"};
+  if(key)headers["Authorization"]="Bearer "+key;
+  if(settings.provider==="openrouter"){headers["HTTP-Referer"]=location.href;headers["X-Title"]="AI Book Trainer";}
+  const d=await fetchJSON(base,{method:"POST",headers,body:JSON.stringify({model,messages:msgs,temperature:0.85})});
+  return d.choices?.[0]?.message?.content||"(пусто)";
+}
+
+// Быстрая диагностика подключения из окна настроек
+async function testConnection(){
+  const r=$("testResult");
+  const prev={...settings};
+  settings.apiKey=$("apiKey").value;
+  settings.model=$("model").value;
+  settings.baseUrl=$("baseUrl").value;
+  const p=PROVIDERS[settings.provider];
+  if(p.style!=="gemini"&&p.style!=="webllm"&&settings.provider!=="custom"&&!cleanToken(settings.apiKey)){
+    r.style.color="var(--danger)";r.textContent="Введите API-ключ.";Object.assign(settings,prev);return;
+  }
+  r.style.color="var(--muted)";r.textContent="Проверяю подключение…";
+  try{
+    const reply=await callLLM([{role:"system",content:"Ты — тест соединения. Ответь одним словом."},{role:"user",content:"Скажи: OK"}]);
+    r.style.color="var(--ok)";r.textContent="✓ Подключение работает. Ответ: "+reply.slice(0,60);
+  }catch(e){
+    r.style.color="var(--danger)";r.textContent="✗ "+e.message;
+  }finally{ Object.assign(settings,prev); }
+}
+
+/* ============ Офлайн-режим (WebLLM / на устройстве) ============ */
+const webllmState={lib:null,engine:null,loadedModel:null,loading:false,appConfig:null};
+
+// Открыт ли файл "небезопасным" способом (через файловый менеджер / file://),
+// из-за чего Chrome отключает WebGPU и блокирует загрузку движка.
+function isInsecureContext(){
+  const pr=location.protocol;
+  // content:// (OnePlus/MIUI file manager), file://, ftp:// и т.п. — не secure context
+  if(pr==="content:"||pr==="file:"||pr==="ftp:")return true;
+  // window.isSecureContext учитывает https и localhost
+  return (typeof isSecureContext!=="undefined")?!isSecureContext:false;
+}
+// Подробное человекочитаемое объяснение, почему офлайн не запустится, и как починить.
+function webgpuHelpHTML(){
+  return `<b>Офлайн-модель не может запуститься в этом режиме открытия файла.</b><br><br>`+
+    `Вы открыли страницу так:<br><code style="word-break:break-all">${escapeHtml(location.href.slice(0,80))}…</code><br><br>`+
+    `Браузер включает <b>WebGPU</b> (нужен для офлайн-ИИ) только когда страница открыта по <b>http(s)://</b> или <b>http://localhost</b>. `+
+    `При открытии файла через файловый менеджер (<code>content://</code>) или как <code>file://</code> — WebGPU выключен, поэтому модель не стартует.<br><br>`+
+    `<b>Как починить (выберите любой способ):</b><br>`+
+    `① <b>Локальный сервер на телефоне (Termux):</b><br>`+
+    `&nbsp;&nbsp;<code>pkg install python</code><br>`+
+    `&nbsp;&nbsp;<code>cd /sdcard/Download && python -m http.server 8000</code><br>`+
+    `&nbsp;&nbsp;затем откройте в Chrome: <code>http://localhost:8000/</code> и выберите файл.<br><br>`+
+    `② <b>Выложить файл на любой https-хостинг</b> (GitHub Pages, Netlify drop, Vercel) и открыть по ссылке.<br><br>`+
+    `③ <b>Онлайн без офлайн-модели:</b> в «🔌 Подключение» выберите <b>OpenRouter / Groq / Gemini</b>, введите бесплатный ключ — работает даже при текущем способе открытия.`;
+}
+// Реальная проверка доступности WebGPU (не только наличие navigator.gpu).
+async function assertWebGPU(){
+  if(isInsecureContext()||!("gpu"in navigator)){
+    const err=new Error("WEBGPU_UNAVAILABLE");
+    err.help=webgpuHelpHTML();
+    throw err;
+  }
+  let adapter;
+  try{ adapter=await navigator.gpu.requestAdapter(); }
+  catch(e){ const err=new Error("WEBGPU_UNAVAILABLE"); err.help=webgpuHelpHTML(); throw err; }
+  if(!adapter){
+    const err=new Error("WEBGPU_NO_ADAPTER");
+    err.help="WebGPU есть, но видеоадаптер не выдан. Обновите Chrome, перезапустите браузер, либо включите аппаратное ускорение в настройках Chrome.";
+    throw err;
+  }
+  return true;
+}
+async function loadWebLLMLib(){
+  if(webllmState.lib)return webllmState.lib;
+  webllmState.lib=await import(/* @vite-ignore */ WEBLLM_CDN);
+  webllmState.appConfig=webllmState.lib.prebuiltAppConfig;
+  return webllmState.lib;
+}
+function modelSizeGB(rec){const mb=rec.vram_required_MB||0;return mb?(mb/1024).toFixed(1):"?";}
+function buildWebLLMUI(){
+  const sel=$("webllmModel"),st=$("webllmStatus");
+  if(isInsecureContext()){
+    st.style.color="var(--danger)";
+    st.innerHTML="⚠️ Файл открыт через файловый менеджер (<code>content://</code>) или как <code>file://</code> — в этом режиме <b>WebGPU выключен</b> и офлайн-модель не запустится. "+
+      "Откройте страницу по <b>http://localhost</b> (Termux: <code>python -m http.server</code>) или с https-хостинга. "+
+      "Либо используйте онлайн-провайдер (OpenRouter/Groq/Gemini).";
+  }else if(!("gpu"in navigator)){
+    st.style.color="var(--danger)";
+    st.innerHTML="⚠️ В этом браузере нет поддержки <b>WebGPU</b> — офлайн-движок не запустится. Откройте приложение в свежем <b>Chrome</b> на Android.";
+  }else{ st.style.color="var(--muted)"; st.textContent=""; }
+  const fill=(list)=>{
+    sel.innerHTML="";
+    const recIds=Object.keys(WEBLLM_RECOMMENDED);
+    const og1=el("optgroup");og1.label="⭐ Рекомендуем для флагмана";
+    const og2=el("optgroup");og2.label="Все доступные модели";
+    const byId={};(list||[]).forEach(r=>byId[r.model_id]=r);
+    recIds.forEach(id=>{
+      const r=byId[id];const o=el("option");o.value=id;
+      o.textContent=`${id.replace(/-MLC.*$/,"")} · ~${r?modelSizeGB(r)+"ГБ":"?"} — ${WEBLLM_RECOMMENDED[id]}`;
+      og1.appendChild(o);
+    });
+    (list||[]).forEach(r=>{
+      if(recIds.includes(r.model_id))return;
+      const o=el("option");o.value=r.model_id;
+      o.textContent=`${r.model_id.replace(/-MLC.*$/,"")} · ~${modelSizeGB(r)}ГБ`;
+      og2.appendChild(o);
+    });
+    if(og1.children.length)sel.appendChild(og1);
+    if(og2.children.length)sel.appendChild(og2);
+    if(settings.webllmModel)sel.value=settings.webllmModel;
+    else if(sel.options.length)sel.value=sel.options[0].value;
+    updateDirectLink();syncWebLLMStatus();
+  };
+  fill(Object.keys(WEBLLM_RECOMMENDED).map(id=>({model_id:id})));
+  loadWebLLMLib().then(()=>fill(webllmState.appConfig.model_list))
+    .catch(e=>{st.style.color="var(--danger)";st.textContent="Не удалось загрузить список моделей: "+e.message;});
+  sel.onchange=()=>{updateDirectLink();syncWebLLMStatus();};
+}
+function updateDirectLink(){
+  const id=$("webllmModel").value,d=$("webllmDirect");
+  const rec=webllmState.appConfig?.model_list?.find(r=>r.model_id===id);
+  if(rec){
+    d.innerHTML=`🔗 Прямые файлы модели: <a href="${rec.model}" target="_blank" rel="noopener">${rec.model.replace('https://huggingface.co/','')}</a> · <a href="${rec.model.replace(/\/$/,'')}/tree/main" target="_blank" rel="noopener">все файлы</a><br>Размер ≈ ${modelSizeGB(rec)} ГБ. Кнопка «Скачать» кэширует автоматически — вручную качать не обязательно.`;
+  }else{
+    d.innerHTML=`🔗 Репозитории моделей: <a href="https://huggingface.co/mlc-ai" target="_blank" rel="noopener">huggingface.co/mlc-ai</a> (ищите <b>${id||"модель"}</b>).`;
+  }
+}
+function syncWebLLMStatus(){
+  const id=$("webllmModel").value,btn=$("webllmLoad");
+  btn.textContent=(webllmState.loadedModel===id&&webllmState.engine)?"✓ Модель загружена — готово к работе":"⬇ Скачать / загрузить модель";
+}
+async function ensureWebLLMEngine(modelId,onProg){
+  if(webllmState.engine&&webllmState.loadedModel===modelId)return webllmState.engine;
+  await assertWebGPU();
+  const lib=await loadWebLLMLib();
+  webllmState.loading=true;
+  try{
+    if(!webllmState.engine)webllmState.engine=await lib.CreateMLCEngine(modelId,{initProgressCallback:onProg});
+    else{ webllmState.engine.setInitProgressCallback?.(onProg); await webllmState.engine.reload(modelId); }
+    webllmState.loadedModel=modelId;
+    return webllmState.engine;
+  }finally{ webllmState.loading=false; }
+}
+async function webllmLoadClicked(){
+  const id=$("webllmModel").value;if(!id)return;
+  const wrap=$("webllmProgWrap"),bar=$("webllmBar"),txt=$("webllmProgText"),btn=$("webllmLoad");
+  wrap.style.display="block";btn.disabled=true;txt.style.color="var(--muted)";
+  const onProg=(r)=>{const pct=Math.round((r.progress||0)*100);bar.style.width=pct+"%";txt.textContent=r.text||`Загрузка… ${pct}%`;};
+  try{
+    await ensureWebLLMEngine(id,onProg);
+    bar.style.width="100%";txt.style.color="var(--ok)";
+    txt.textContent="✓ Готово. Модель закэширована — следующий запуск будет офлайн.";
+    settings.webllmModel=id;settings.provider="webllm";
+    localStorage.setItem(LS,JSON.stringify(settings));updateBadge();syncWebLLMStatus();
+  }catch(e){ txt.style.color="var(--danger)";txt.textContent="✗ "+e.message; }
+  finally{ btn.disabled=false; }
+}
+// Живой вывод офлайн-модели прямо в «печатающий» пузырь, чтобы было видно,
+// что модель работает (на телефоне генерация 7–8B идёт постепенно).
+function webllmLiveBubble(){
+  const t=$("typingMsg");
+  if(!t)return null;
+  const b=t.querySelector(".bubble");
+  if(b)b.innerHTML="";          // убираем анимацию точек, начинаем показывать текст
+  return b;
+}
+async function callWebLLM(msgs){
+  const id=settings.webllmModel;
+  if(!id)throw new Error("Сначала выберите и загрузите офлайн-модель в окне «Подключение LLM».");
+  const eng=await ensureWebLLMEngine(id,(r)=>setStatus(r.text||`Загрузка модели… ${Math.round((r.progress||0)*100)}%`));
+  setStatus("Автор печатает…");
+  // 1) Пробуем потоковый режим — мгновенная обратная связь по токенам
+  try{
+    const stream=await eng.chat.completions.create({messages:msgs,temperature:0.85,max_tokens:1024,stream:true});
+    let acc="";const bub=webllmLiveBubble();
+    for await(const ch of stream){
+      const delta=ch.choices?.[0]?.delta?.content||"";
+      if(delta){
+        acc+=delta;
+        if(bub){bub.innerHTML=mdLite(acc);const c=$("chat");if(c)c.scrollTop=c.scrollHeight;}
+      }
+    }
+    if(acc.trim())return acc;
+    // некоторые сборки отдают итог через getMessage()
+    const full=await eng.getMessage?.();
+    if(full&&full.trim())return full;
+  }catch(e){
+    console.warn("WebLLM stream failed, fallback to non-stream:",e);
+  }
+  // 2) Фолбэк: обычный (непотоковый) вызов
+  const res=await eng.chat.completions.create({messages:msgs,temperature:0.85,max_tokens:1024});
+  return res.choices?.[0]?.message?.content||"(пусто)";
+}
+
+/* ============ Flow ============ */
+async function startTraining(){
+ try{
+  toast("Запускаю тренировку…");           // мгновенная видимая реакция на нажатие
+  const prov=PROVIDERS[settings.provider];
+  if(prov.offline){
+    if(!settings.webllmModel){openSettings();banner("Выберите и загрузите офлайн-модель.");return;}
+    // Заранее проверяем WebGPU, чтобы сразу объяснить проблему (а не «ничего не происходит»)
+    try{ await assertWebGPU(); }
+    catch(e){
+      closeSidebarMobile();
+      if(e&&e.help) showErrorCard(e.help);
+      else banner("Офлайн-движок недоступен: "+e.message);
+      setStatus("Офлайн-режим недоступен в этом способе открытия");
+      return;
+    }
+  }else if(prov.style!=="gemini"&&settings.provider!=="custom"&&!settings.apiKey){
+    openSettings();toast("Сначала введите API-ключ.");banner("Сначала введите API-ключ.");return;
+  }
+  const book=$("book").value.trim(),ctx=$("context").value.trim();
+  if(!book){
+    openSidebar();toast("Заполните поле «Книга и автор» в панели «Сценарий».");
+    banner("Заполните «Книга и автор».");flagField("book");return;
+  }
+  if(!ctx){
+    openSidebar();toast("Заполните поле «Ваш контекст и задача».");
+    banner("Заполните «Ваш контекст».");flagField("context");return;
+  }
+  banner("");closeSidebarMobile();
+  $("toast").classList.remove("show");
+  messages=[{role:"system",content:buildSystemPrompt()}];
+  renderChat();enableComposer(true);$("quickbar").style.display="flex";
+  await getAssistantReply("Начни тренировку: выполни шаг 1.");
+ }catch(e){
+  // Любая непредвиденная ошибка теперь видна, а не «ничего не происходит»
+  console.error("startTraining error:",e);
+  removeTyping();
+  showErrorCard("<b>Не удалось запустить тренировку.</b><br><br>Техническая ошибка:<br><code style='word-break:break-all'>"+escapeHtml(String(e&&e.message||e))+"</code><br><br>Сделайте скриншот этого сообщения.");
+  toast("Ошибка запуска: "+(e&&e.message||e));
+  setStatus("Ошибка запуска тренировки");
+ }
+}
+async function getAssistantReply(kick){
+  const send=[...messages];if(kick)send.push({role:"user",content:kick});
+  showTyping();setStatus("Автор печатает…");$("sendBtn").disabled=true;
+  try{
+    const reply=await callLLM(send);removeTyping();
+    messages.push({role:"assistant",content:reply});renderChat();
+    setStatus("Ваш ход — отвечайте оппоненту");
+    if($("autoSpeak").checked)speak(reply);
+  }catch(e){
+    removeTyping();
+    if(e&&e.help){ showErrorCard(e.help); setStatus("Офлайн-режим недоступен в этом способе открытия"); }
+    else{ banner("Ошибка API: "+e.message); setStatus("Ошибка — проверьте ключ/модель"); }
+  }
+  finally{$("sendBtn").disabled=false;}
+}
+async function sendQuick(msg){
+  if(messages.length===0)return;
+  $("input").value=msg;await sendMessage();
+}
+async function sendMessage(){
+  const txt=$("input").value.trim();
+  if(!txt||messages.length===0)return;
+  if(recording)stopRec();
+  banner("");$("input").value="";autoGrow($("input"));
+  messages.push({role:"user",content:txt});renderChat();
+  showTyping();setStatus("Автор печатает…");$("sendBtn").disabled=true;$("input").disabled=true;
+  try{
+    const reply=await callLLM(messages);removeTyping();
+    messages.push({role:"assistant",content:reply});renderChat();
+    setStatus("Ваш ход — отвечайте оппоненту");
+    if($("autoSpeak").checked)speak(reply);
+  }catch(e){removeTyping();messages.pop();renderChat();banner("Ошибка API: "+e.message);setStatus("Ошибка — реплика не отправлена");}
+  finally{$("sendBtn").disabled=false;$("input").disabled=false;$("input").focus();}
+}
+
+/* ============ Export ============ */
+function dialogText(md){
+  const book=$("book").value.trim()||"книга";
+  let out=`ИИ-Тренажёр по книгам\nКнига: ${book}\nДата: ${new Date().toLocaleString()}\n\n`;
+  messages.filter(m=>m.role!=="system").forEach(m=>{
+    const who=m.role==="user"?"ВЫ":"АВТОР-ТРЕНАЖЁР";
+    out+=md?`### ${who}\n${m.content}\n\n`:`[${who}]\n${m.content}\n\n`;
+  });
+  return out;
+}
+function download(name,text){
+  const b=new Blob([text],{type:"text/plain;charset=utf-8"});
+  const a=el("a");a.href=URL.createObjectURL(b);a.download=name;a.click();URL.revokeObjectURL(a.href);
+}
+
+/* ============ UI ============ */
+function setStatus(s){$("statusLine").textContent=s;}
+function enableComposer(on){$("input").disabled=!on;$("sendBtn").disabled=!on;$("micBtn").disabled=!on||!recognition;if(on)$("input").focus();}
+function autoGrow(t){t.style.height="auto";t.style.height=Math.min(t.scrollHeight,160)+"px";}
+
+function isMobile(){return window.matchMedia("(max-width:820px)").matches;}
+function openSidebar(){$("sidebar").classList.remove("hidden");if(isMobile())$("scrim").classList.add("show");}
+function closeSidebarMobile(){if(isMobile()){$("sidebar").classList.add("hidden");$("scrim").classList.remove("show");}}
+function toggleSidebar(){
+  if(isMobile()){
+    const hidden=$("sidebar").classList.contains("hidden");
+    hidden?openSidebar():closeSidebarMobile();
+  }else{
+    $("sidebar").classList.toggle("hidden");
+  }
+}
+
+function renderProviders(){
+  const grid=$("provGrid");grid.innerHTML="";
+  Object.entries(PROVIDERS).forEach(([k,p])=>{
+    const d=el("div","prov"+(settings.provider===k?" active":""));
+    d.innerHTML=`<div class="pname">${p.name}</div><div class="pdesc">${p.desc}</div>`;
+    d.onclick=()=>{settings.provider=k;renderProviders();fillProviderFields();};
+    grid.appendChild(d);
+  });
+}
+function fillProviderFields(){
+  const p=PROVIDERS[settings.provider];
+  const offline=!!p.offline;
+  $("keyHint").textContent=p.keyHint;
+  $("apiKey").closest(".field").style.display=offline?"none":"block";
+  $("model").closest(".field").style.display=offline?"none":"block";
+  $("testConn").style.display=offline?"none":"inline-flex";
+  const dl=$("modelList");dl.innerHTML="";
+  p.models.forEach(m=>{const o=el("option");o.value=m;dl.appendChild(o);});
+  if(!$("model").value||!Object.values(PROVIDERS).some(pr=>pr.models.includes($("model").value)))
+    $("model").value=settings.model&&p.models.includes(settings.model)?settings.model:(p.models[0]||"");
+  $("baseUrlField").style.display=p.custom?"block":"none";
+  if(p.custom)$("baseUrlHint").innerHTML="Примеры: <b>http://localhost:11434</b> (Ollama) · <b>http://localhost:1234/v1</b> (LM Studio). Схему можно не дописывать — подставится автоматически.";
+  $("offlineField").style.display=offline?"block":"none";
+  if(offline)buildWebLLMUI();
+}
+function openSettings(){renderProviders();$("apiKey").value=settings.apiKey||"";$("model").value=settings.model||"";$("baseUrl").value=settings.baseUrl||"";fillProviderFields();$("settingsModal").classList.add("open");}
+function closeSettings(){$("settingsModal").classList.remove("open");}
+function saveSettings(){
+  const p=PROVIDERS[settings.provider];
+  if(p.offline){
+    settings.webllmModel=$("webllmModel").value;
+    localStorage.setItem(LS,JSON.stringify(settings));updateBadge();closeSettings();banner("");return;
+  }
+  settings.apiKey=cleanToken($("apiKey").value);settings.model=$("model").value.trim();settings.baseUrl=$("baseUrl").value.trim();
+  localStorage.setItem(LS,JSON.stringify(settings));$("apiKey").value=settings.apiKey;updateBadge();closeSettings();if(settings.apiKey)banner("");
+}
+function updateBadge(){
+  const p=PROVIDERS[settings.provider];
+  if(p.offline){
+    const m=settings.webllmModel||"модель не выбрана";
+    const ready=webllmState.engine&&webllmState.loadedModel===settings.webllmModel;
+    $("modelBadge").textContent=`📵 ${m}`+(ready?" ✓":"");
+    $("provLine").textContent=`📵 ${m}`+(ready?" (загружена)":" (не загружена)");
+    return;
+  }
+  const m=settings.model||p.models[0];
+  $("modelBadge").textContent=settings.apiKey?`${p.name} · ${m}`:"ключ не задан";
+  $("provLine").textContent=settings.apiKey?`${p.name} · ${m}`:"";
+}
+
+function buildQuickbar(){
+  const q=$("quickbar");q.innerHTML="";
+  QUICK_ACTIONS.forEach(a=>{
+    const c=el("span","chip");c.textContent=a.label;c.onclick=()=>sendQuick(a.msg);q.appendChild(c);
+  });
+}
+
+/* ============ Theme ============ */
+function applyTheme(t){
+  document.documentElement.setAttribute("data-theme",t);
+  $("themeBtn").textContent=t==="light"?"☀️":"🌙";
+  $("themeBtn").title=t==="light"?"Тёмная тема":"Светлая тема";
+  const meta=document.querySelector('meta[name="theme-color"]');
+  if(meta)meta.content=t==="light"?"#f3f5fa":"#0f1117";
+  settings.theme=t;localStorage.setItem(LS,JSON.stringify(settings));
+}
+function toggleTheme(){
+  const cur=document.documentElement.getAttribute("data-theme")==="light"?"dark":"light";
+  applyTheme(cur);
+}
+
+function init(){
+  // theme: saved or system preference
+  const initTheme=settings.theme||((window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark");
+  applyTheme(initTheme);
+  $("themeBtn").onclick=toggleTheme;
+
+  // presets
+  const pc=$("bookPresets");
+  BOOK_PRESETS.forEach(b=>{
+    const c=el("span","chip");c.textContent=(b.match(/"([^"]+)"/)?.[1])||b.slice(0,22);
+    c.title=b;c.onclick=()=>{$("book").value=b;updatePromptPreview();persistScenario();};
+    pc.appendChild(c);
+  });
+  buildQuickbar();
+  // restore scenario
+  const sc=JSON.parse(localStorage.getItem(LS+"_scn")||"{}");
+  if(sc.book)$("book").value=sc.book;
+  if(sc.context)$("context").value=sc.context;
+  if(sc.lang)$("lang").value=sc.lang;
+  if(typeof sc.prov==="boolean")$("provMode").checked=sc.prov;
+  if(typeof sc.autoSpeak==="boolean")$("autoSpeak").checked=sc.autoSpeak;
+
+  updatePromptPreview();updateBadge();
+
+  ["book","context","lang","provMode"].forEach(id=>$(id).addEventListener("input",()=>{updatePromptPreview();persistScenario();}));
+  $("autoSpeak").addEventListener("change",persistScenario);
+  $("lang").addEventListener("change",loadVoices);
+
+  $("startBtn").onclick=startTraining;
+  $("sendBtn").onclick=sendMessage;
+  $("micBtn").onclick=toggleRec;
+  $("openSettings").onclick=openSettings;
+  $("closeSettings").onclick=closeSettings;
+  $("saveSettings").onclick=saveSettings;
+  $("testConn").onclick=testConnection;
+  $("webllmLoad").onclick=webllmLoadClicked;
+  $("settingsModal").onclick=e=>{if(e.target===$("settingsModal"))closeSettings();};
+  $("toggleSidebar").onclick=toggleSidebar;
+  $("menuBtn").onclick=toggleSidebar;
+  $("scrim").onclick=closeSidebarMobile;
+
+  // more menu
+  $("menuMore").onclick=()=>$("moreModal").classList.add("open");
+  $("closeMore").onclick=()=>$("moreModal").classList.remove("open");
+  $("moreModal").onclick=e=>{if(e.target===$("moreModal"))$("moreModal").classList.remove("open");};
+  $("exportTxt").onclick=()=>{download("trainer-dialog.txt",dialogText(false));};
+  $("exportMd").onclick=()=>{download("trainer-dialog.md",dialogText(true));};
+  $("copyDialog").onclick=()=>{navigator.clipboard.writeText(dialogText(false)).then(()=>banner("Скопировано в буфер."));$("moreModal").classList.remove("open");};
+  $("stopSpeak").onclick=()=>{stopSpeak();$("moreModal").classList.remove("open");};
+  $("resetChat").onclick=()=>{if(confirm("Очистить диалог и начать заново?")){messages=[];enableComposer(false);renderChat();setStatus("Сначала запустите тренировку");banner("");$("quickbar").style.display="none";$("moreModal").classList.remove("open");}};
+
+  const inp=$("input");
+  inp.addEventListener("input",()=>autoGrow(inp));
+  inp.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}});
+
+  // voice features
+  if(initSTT())$("micBtn").title="Голосовой ввод";
+  if("speechSynthesis"in window){
+    loadVoices();
+    speechSynthesis.onvoiceschanged=loadVoices;
+    $("voiceSel").addEventListener("change",()=>{settings.voice=$("voiceSel").value;localStorage.setItem(LS,JSON.stringify(settings));});
+  }else{
+    $("speechSupport").textContent="🔇 Озвучка недоступна в этом браузере.";
+    $("autoSpeak").disabled=true;$("voiceSel").disabled=true;
+  }
+
+  // show mobile menu button
+  if(isMobile()){$("menuBtn").style.display="inline-flex";$("sidebar").classList.add("hidden");}
+  window.addEventListener("resize",()=>{
+    if(isMobile()){$("menuBtn").style.display="inline-flex";}
+    else{$("menuBtn").style.display="none";$("scrim").classList.remove("show");$("sidebar").classList.remove("hidden");}
+  });
+
+  const _p=PROVIDERS[settings.provider];
+  const _ready=_p.offline?!!settings.webllmModel:!!settings.apiKey;
+  if(!_ready)setTimeout(openSettings,400);
+}
+function persistScenario(){
+  localStorage.setItem(LS+"_scn",JSON.stringify({
+    book:$("book").value,context:$("context").value,lang:$("lang").value,
+    prov:$("provMode").checked,autoSpeak:$("autoSpeak").checked
+  }));
+}
+init();
+</script>
+</body>
+</html>
