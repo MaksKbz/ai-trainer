@@ -921,10 +921,11 @@ async function callWebLLM(msgs){
   if(!id)throw new Error("Сначала выберите и загрузите офлайн-модель в окне «Подключение LLM».");
   const eng=await ensureWebLLMEngine(id,(r)=>setStatus(r.text||`Загрузка модели… ${Math.round((r.progress||0)*100)}%`));
   setStatus("Автор печатает…");
-  // 1) Пробуем потоковый режим — мгновенная обратная связь по токенам
+  
+  let acc="";
   try{
-    const stream=await eng.chat.completions.create({messages:msgs,temperature:0.85,max_tokens:1024,stream:true});
-    let acc="";const bub=webllmLiveBubble();
+    const stream=await eng.chat.completions.create({messages:msgs,temperature:0.7,stream:true});
+    const bub=webllmLiveBubble();
     for await(const ch of stream){
       const delta=ch.choices?.[0]?.delta?.content||"";
       if(delta){
@@ -932,16 +933,16 @@ async function callWebLLM(msgs){
         if(bub){bub.innerHTML=mdLite(acc);const c=$("chat");if(c)c.scrollTop=c.scrollHeight;}
       }
     }
-    if(acc.trim())return acc;
-    // некоторые сборки отдают итог через getMessage()
-    const full=await eng.getMessage?.();
-    if(full&&full.trim())return full;
   }catch(e){
-    console.warn("WebLLM stream failed, fallback to non-stream:",e);
+    throw new Error("Сбой WebLLM: " + e.message);
   }
-  // 2) Фолбэк: обычный (непотоковый) вызов
-  const res=await eng.chat.completions.create({messages:msgs,temperature:0.85,max_tokens:1024});
-  return res.choices?.[0]?.message?.content||"(пусто)";
+  
+  if(acc.trim())return acc;
+  
+  const full=await eng.getMessage?.();
+  if(full&&full.trim())return full;
+  
+  throw new Error("Модель вернула пустой ответ. Возможно, не хватило оперативной памяти (VRAM) на устройстве или контекст оборвался. Попробуйте перезагрузить страницу или выбрать более лёгкую модель (напр. Llama 8B или Qwen 3B).");
 }
 
 /* ============ Flow ============ */
