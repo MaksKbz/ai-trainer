@@ -570,7 +570,7 @@ function renderChat(){
   const chat=$("chat");
   if(!_emptyEl)_emptyEl=$("empty");   // запоминаем заглушку ДО очистки, иначе после innerHTML="" её уже не найти
   chat.innerHTML="";
-  const visible=messages.filter(m=>m.role!=="system");
+  const visible=messages.filter(m=>m.role!=="system" && !m.hidden);
   if(visible.length===0){if(_emptyEl)chat.appendChild(_emptyEl);return;}
   visible.forEach((m,i)=>{
     const wrap=el("div","msg "+m.role);
@@ -987,8 +987,9 @@ async function startTraining(){
  }
 }
 async function getAssistantReply(kick){
-  const send=[...messages];if(kick)send.push({role:"user",content:kick});
-  showTyping();setStatus("Автор печатает…");$("sendBtn").disabled=true;
+  if(kick)messages.push({role:"user",content:kick,hidden:true});
+  const send=messages.map(m=>({role:m.role,content:m.content}));
+  showTyping();setStatus("Автор печатает…");enableComposer(false);
   try{
     const reply=await callLLM(send);removeTyping();
     messages.push({role:"assistant",content:reply});renderChat();
@@ -999,7 +1000,7 @@ async function getAssistantReply(kick){
     if(e&&e.help){ showErrorCard(e.help); setStatus("Офлайн-режим недоступен в этом способе открытия"); }
     else{ banner("Ошибка API: "+e.message); setStatus("Ошибка — проверьте ключ/модель"); }
   }
-  finally{$("sendBtn").disabled=false;}
+  finally{enableComposer(true);}
 }
 async function sendQuick(msg){
   if(messages.length===0)return;
@@ -1011,14 +1012,15 @@ async function sendMessage(){
   if(recording)stopRec();
   banner("");$("input").value="";autoGrow($("input"));
   messages.push({role:"user",content:txt});renderChat();
-  showTyping();setStatus("Автор печатает…");$("sendBtn").disabled=true;$("input").disabled=true;
+  showTyping();setStatus("Автор печатает…");enableComposer(false);
+  const send=messages.map(m=>({role:m.role,content:m.content}));
   try{
-    const reply=await callLLM(messages);removeTyping();
+    const reply=await callLLM(send);removeTyping();
     messages.push({role:"assistant",content:reply});renderChat();
     setStatus("Ваш ход — отвечайте оппоненту");
     if($("autoSpeak").checked)speak(reply);
   }catch(e){removeTyping();messages.pop();renderChat();banner("Ошибка API: "+e.message);setStatus("Ошибка — реплика не отправлена");}
-  finally{$("sendBtn").disabled=false;$("input").disabled=false;$("input").focus();}
+  finally{enableComposer(true);}
 }
 
 /* ============ Export ============ */
