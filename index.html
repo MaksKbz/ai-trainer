@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <meta name="theme-color" content="#0f1117" />
-<title>ИИ-Тренажёр по книгам — v1.6</title>
+<title>ИИ-Тренажёр по книгам — v1.6.3</title>
 <link rel="manifest" href="manifest.json" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black" />
@@ -29,7 +29,7 @@
   v1.1 — починка подключения на смартфоне (CORS/очистка ключа/таймаут/кнопка «Проверить»).
   v1.0 — базовая версия с мультипровайдерами, темами, голосом и быстрыми действиями.
 -->
-<script>const APP_VERSION="v1.6";</script>
+<script>const APP_VERSION="v1.6.3";</script>
 <script>
   // Apply saved theme ASAP to avoid flash
   try{
@@ -282,7 +282,7 @@
   <button class="btn icon show-sm" id="menuBtn" title="Сценарий" style="display:none">☰</button>
   <div class="logo">🥋</div>
   <div class="htitle">
-    <h1>ИИ-Тренажёр по книгам <span id="appVer" style="font-size:11px;font-weight:500;color:var(--muted);opacity:.8">v1.6</span></h1>
+    <h1>ИИ-Тренажёр по книгам <span id="appVer" style="font-size:11px;font-weight:500;color:var(--muted);opacity:.8">v1.6.3</span></h1>
     <div class="sub">От пассивного чтения — к навыку через симуляцию</div>
   </div>
   <div class="header-spacer"></div>
@@ -920,6 +920,7 @@ async function callWebLLM(msgs){
   const id=settings.webllmModel;
   if(!id)throw new Error("Сначала выберите и загрузите офлайн-модель в окне «Подключение LLM».");
   const eng=await ensureWebLLMEngine(id,(r)=>setStatus(r.text||`Загрузка модели… ${Math.round((r.progress||0)*100)}%`));
+  updateBadge();
   setStatus("Автор печатает…");
   
   let acc="";
